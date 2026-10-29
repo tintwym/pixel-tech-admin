@@ -137,7 +137,7 @@ export default function AdminHomePage() {
       return false;
     }
     try {
-      await updateProduct(item.apiId, fields);
+      const images = await updateProduct(item.apiId, fields);
       setProducts((prev) =>
         prev.map((p) =>
           p.id === item.id
@@ -150,6 +150,9 @@ export default function AdminHomePage() {
                 price: fields.price,
                 stock: fields.stock,
                 maxStock: Math.max(p.maxStock, fields.stock),
+                ...(images
+                  ? { imageUrl: images.imageUrl, imageUrls: images.imageUrls }
+                  : {}),
               }
             : p
         )

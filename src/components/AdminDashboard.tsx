@@ -390,6 +390,8 @@ export default function AdminDashboard({
   const [editBrand, setEditBrand] = useState('Apple');
   const [editCategory, setEditCategory] = useState('Smartphones');
   const [editSaving, setEditSaving] = useState(false);
+  const [editImages, setEditImages] = useState<File[]>([]);
+  const [replaceGallery, setReplaceGallery] = useState(false);
   const closeSignOut = useCallback(() => setConfirmSignOut(false), []);
   const requestSignOut = () => {
     setProfileOpen(false);
@@ -964,10 +966,27 @@ export default function AdminDashboard({
     setEditingProduct(item);
     setEditBrand(item.brand || 'Other');
     setEditCategory(item.category || 'Accessories');
+    setEditImages([]);
+    setReplaceGallery(false);
+  };
+
+  const closeProductEditor = () => {
+    if (editSaving) return;
+    setEditingProduct(null);
+    setEditImages([]);
+    setReplaceGallery(false);
   };
 
   const saveProductEditor = async () => {
     if (!editingProduct) return;
+    if (replaceGallery && editImages.length === 0) {
+      onAddToast(
+        'Add images',
+        'Select at least one image when replacing the gallery.',
+        'warning'
+      );
+      return;
+    }
     setEditSaving(true);
     const ok = await onUpdateProduct(editingProduct, {
       name: editingProduct.name,
@@ -976,11 +995,19 @@ export default function AdminDashboard({
       category: editCategory,
       price: editingProduct.price,
       stock: editingProduct.stock,
+      images: editImages.length > 0 ? editImages : undefined,
+      replaceImages: replaceGallery,
     });
     setEditSaving(false);
     if (ok) {
-      onAddToast('Product updated', `${editingProduct.name} brand/category saved.`, 'success');
-      setEditingProduct(null);
+      onAddToast(
+        'Product updated',
+        editImages.length > 0
+          ? `${editingProduct.name} saved with ${editImages.length} new image${editImages.length === 1 ? '' : 's'}.`
+          : `${editingProduct.name} brand/category saved.`,
+        'success'
+      );
+      closeProductEditor();
     }
   };
 
@@ -1070,9 +1097,9 @@ export default function AdminDashboard({
               type="button"
               aria-label="Close editor"
               className="absolute inset-0 bg-black/60 cursor-pointer"
-              onClick={() => !editSaving && setEditingProduct(null)}
+              onClick={closeProductEditor}
             />
-            <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0B1220] p-5 shadow-2xl">
+            <div className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0B1220] p-5 shadow-2xl">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-600">Edit product</p>
@@ -1082,7 +1109,7 @@ export default function AdminDashboard({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setEditingProduct(null)}
+                  onClick={closeProductEditor}
                   disabled={editSaving}
                   className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer"
                 >
@@ -1119,12 +1146,75 @@ export default function AdminDashboard({
                     ))}
                   </select>
                 </label>
+
+                <div>
+                  <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Current gallery</p>
+                  <div className="mt-1.5 flex gap-2 overflow-x-auto pb-1">
+                    {(editingProduct.imageUrls?.length
+                      ? editingProduct.imageUrls
+                      : [editingProduct.imageUrl]
+                    ).map((src, i) => (
+                      <ProductImage
+                        key={`${src}-${i}`}
+                        src={src}
+                        alt=""
+                        className="h-14 w-14 shrink-0 rounded-lg object-cover border border-slate-200 dark:border-white/10"
+                      />
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
+                    First image is the catalog card. For colors, put the finish in the filename
+                    (e.g. <span className="font-mono">…-select-starwhite-…</span>,{' '}
+                    <span className="font-mono">…-select-nightsky-…</span>). Shared heroes can use{' '}
+                    <span className="font-mono">unselect</span>.
+                  </p>
+                </div>
+
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                  Upload images
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    disabled={editSaving}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      setEditImages(files);
+                    }}
+                    className="mt-1.5 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#e0f2fe] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#0369a1] dark:file:bg-sky-950/50 dark:file:text-sky-300 cursor-pointer"
+                  />
+                </label>
+                {editImages.length > 0 && (
+                  <ul className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#121a24] px-3 py-2 text-[11px] text-slate-600 dark:text-slate-300 space-y-1 max-h-28 overflow-y-auto">
+                    {editImages.map((file) => (
+                      <li key={file.name + file.size} className="truncate font-mono">
+                        {file.name}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <label className="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={replaceGallery}
+                    disabled={editSaving}
+                    onChange={(e) => setReplaceGallery(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-300 text-[#0284c7] focus:ring-[#0284c7]"
+                  />
+                  <span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-100">Replace existing gallery</span>
+                    <span className="block text-slate-400 mt-0.5">
+                      Clears current photos before uploading the new ones. Leave unchecked to append.
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div className="mt-5 flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setEditingProduct(null)}
+                  onClick={closeProductEditor}
                   disabled={editSaving}
                   className="rounded-xl px-3.5 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer"
                 >

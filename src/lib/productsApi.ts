@@ -1,6 +1,7 @@
 import { GroceryItem, FeaturesRestriction } from '@/types';
 import { INITIAL_GROCERIES } from '@/data/products';
 import { inferBrandFromName, inferCategoryFromName } from '@/data/catalogTaxonomy';
+import { sortCatalogNewestFirst } from '@/lib/catalogSort';
 
 const API_BASE =
   (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_BASE_URL) ||
@@ -70,16 +71,22 @@ function mapApiProduct(api: ApiProduct, local?: GroceryItem): GroceryItem {
     api.images
       ?.map((img) => img.path)
       .filter((path): path is string => Boolean(path) && !isPlaceholderImage(path)) ?? [];
-  const imageUrl =
-    local?.imageUrl ||
-    apiGallery[0] ||
-    'https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?auto=format&fit=crop&w=600&q=80';
-  const imageUrls =
+  // Prefer live API/Cloudinary galleries; local Unsplash/curated is fallback only.
+  const localGallery =
     local?.imageUrls?.length
-      ? local.imageUrls
-      : apiGallery.length > 0
-        ? apiGallery
-        : [imageUrl];
+      ? local.imageUrls.filter((path) => !isPlaceholderImage(path))
+      : local?.imageUrl && !isPlaceholderImage(local.imageUrl)
+        ? [local.imageUrl]
+        : [];
+  const imageUrls =
+    apiGallery.length > 0
+      ? apiGallery
+      : localGallery.length > 0
+        ? localGallery
+        : [
+            'https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?auto=format&fit=crop&w=600&q=80',
+          ];
+  const imageUrl = imageUrls[0];
 
   return {
     id: local?.id ?? String(api.id),
@@ -99,6 +106,7 @@ function mapApiProduct(api: ApiProduct, local?: GroceryItem): GroceryItem {
     isSubscriptionAvailable: local?.isSubscriptionAvailable ?? false,
     rating: local?.rating ?? 4.5,
     unit: local?.unit ?? '1 unit',
+    catalogPriority: local?.catalogPriority,
   };
 }
 
@@ -137,8 +145,10 @@ export async function fetchCatalogProducts(signal?: AbortSignal): Promise<Grocer
     INITIAL_GROCERIES.map((item) => [normalizeName(item.name), item] as const)
   );
 
-  return (data as ApiProduct[]).map((api) => {
-    const local = api.name ? localByName.get(normalizeName(api.name)) : undefined;
-    return mapApiProduct(api, local);
-  });
+  return sortCatalogNewestFirst(
+    (data as ApiProduct[]).map((api) => {
+      const local = api.name ? localByName.get(normalizeName(api.name)) : undefined;
+      return mapApiProduct(api, local);
+    })
+  );
 }

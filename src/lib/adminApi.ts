@@ -160,13 +160,22 @@ export type UpdateProductFields = {
   category: string;
   price: number;
   stock: number;
+  /** New gallery files to upload to Cloudinary (FormData field `images`). */
+  images?: File[];
+  /** When true, clears existing gallery before attaching new uploads. */
+  replaceImages?: boolean;
 };
 
-/** Update product metadata (brand, category, etc.) via multipart form fields. */
+export type UpdatedProductImages = {
+  imageUrl: string;
+  imageUrls: string[];
+};
+
+/** Update product metadata and optional gallery via multipart form fields. */
 export async function updateProduct(
   productId: string,
   fields: UpdateProductFields
-): Promise<void> {
+): Promise<UpdatedProductImages | null> {
   const token = getAdminToken();
   if (!token) throw new AdminApiError(401, 'Not signed in.');
 
@@ -177,6 +186,10 @@ export async function updateProduct(
   body.append('category', fields.category);
   body.append('price', String(fields.price));
   body.append('stock', String(fields.stock));
+  body.append('replaceImages', fields.replaceImages ? 'true' : 'false');
+  for (const file of fields.images || []) {
+    body.append('images', file);
+  }
 
   let res: Response;
   try {
@@ -189,6 +202,20 @@ export async function updateProduct(
     throw new AdminApiError(0, 'Network error');
   }
   if (!res.ok) throw await parseError(res);
+
+  try {
+    const data = (await res.json()) as {
+      images?: { path?: string }[];
+    };
+    const urls =
+      data.images
+        ?.map((img) => img.path)
+        .filter((path): path is string => Boolean(path)) ?? [];
+    if (urls.length === 0) return null;
+    return { imageUrl: urls[0], imageUrls: urls };
+  } catch {
+    return null;
+  }
 }
 
 /** Friendly copy for failed dashboard actions (orders, restock). */
