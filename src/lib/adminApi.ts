@@ -43,7 +43,15 @@ async function parseError(res: Response): Promise<AdminApiError> {
   } catch {
     try {
       const text = await res.text();
-      if (text && text.length < 300 && !text.trimStart().startsWith('<')) message = text;
+      const trimmed = text?.trim() ?? '';
+      if (trimmed.startsWith('<') || /503 Server Error|billing is disabled/i.test(trimmed)) {
+        message =
+          res.status === 503
+            ? 'The API is temporarily unavailable (Cloud Run may be paused or billing disabled).'
+            : 'The API returned an unexpected HTML error page.';
+      } else if (trimmed && trimmed.length < 300) {
+        message = trimmed;
+      }
     } catch {
       /* ignore */
     }
@@ -248,6 +256,11 @@ export function serverErrorMessage(error: AdminApiError): string {
       return 'This account doesn’t have admin access.';
     case error.status === 429:
       return 'Too many sign-in attempts. Please wait a minute and try again.';
+    case error.status === 502 || error.status === 503 || error.status === 504:
+      return (
+        error.message ||
+        'The API is unavailable right now. If you use Cloud Run, check that billing is enabled and the service is running.'
+      );
     case error.status >= 500:
       return 'The server ran into a problem. Please try again shortly.';
     default:
