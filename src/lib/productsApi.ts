@@ -35,6 +35,27 @@ function normalizeName(name: string): string {
   return name.toLowerCase().replace(/["“”']/g, '').replace(/\s+/g, ' ').trim();
 }
 
+const LEGACY_NAME_TO_LOCAL: Record<string, string> = {
+  'macbook air': 'macbook air m5',
+  'macbook neo': 'macbook neo m4',
+  'macbook pro proled': 'macbook pro proled m5',
+  'macbook pro': 'macbook pro m6',
+  'imac': 'imac m6',
+  'mac mini': 'mac mini m6',
+  'ipad pro': 'ipad pro m5',
+  'ipad air': 'ipad air m2',
+  'ipad': 'ipad a16',
+};
+
+function findLocalByName(
+  apiName: string | undefined,
+  localByName: Map<string, GroceryItem>
+): GroceryItem | undefined {
+  if (!apiName) return undefined;
+  const key = normalizeName(apiName);
+  return localByName.get(key) || localByName.get(LEGACY_NAME_TO_LOCAL[key] || '');
+}
+
 function isPlaceholderImage(url?: string | null): boolean {
   if (!url) return true;
   const lower = url.toLowerCase();
@@ -65,7 +86,8 @@ function resolveCategory(
 }
 
 function mapApiProduct(api: ApiProduct, local?: GroceryItem): GroceryItem {
-  const name = api.name?.trim() || local?.name || 'Product';
+  // Prefer curated local titles (chip detail) when present.
+  const name = local?.name?.trim() || api.name?.trim() || 'Product';
   const priceNum = Number(api.price);
   const stock = typeof api.stock === 'number' ? api.stock : local?.stock ?? 0;
   const apiImages = [...(api.images ?? [])]
@@ -156,7 +178,7 @@ export async function fetchCatalogProducts(signal?: AbortSignal): Promise<Grocer
 
   return sortCatalogNewestFirst(
     (data as ApiProduct[]).map((api) => {
-      const local = api.name ? localByName.get(normalizeName(api.name)) : undefined;
+      const local = findLocalByName(api.name, localByName);
       return mapApiProduct(api, local);
     })
   );
