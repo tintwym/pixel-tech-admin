@@ -57,6 +57,12 @@ export type FeaturesRestriction =
   | 'DeX'
   | 'Foldable';
 
+/** One gallery row from the API (id required to reorder / set primary). */
+export type ProductGalleryImage = {
+  id: string;
+  path: string;
+};
+
 export interface GroceryItem {
   id: string;
   /** Backend product UUID; absent for the offline fallback catalog. */
@@ -70,6 +76,8 @@ export interface GroceryItem {
   imageUrl: string;
   /** Full gallery when available; card UI uses imageUrl (first image). */
   imageUrls?: string[];
+  /** API images with ids — used by admin gallery reorder. */
+  imageGallery?: ProductGalleryImage[];
   stock: number;
   maxStock: number;
   availabilityZone: 'Downtown Yangon' | 'Yankin' | 'Bahan' | 'Hlaing' | 'All Zones';
@@ -115,7 +123,7 @@ export interface AdminOrder {
   id: string;
   customerName: string;
   customerEmail?: string;
-  items: { productId?: string; name: string; quantity: number; price: number }[];
+  items: { productId?: string; name: string; quantity: number; price: number; variantLabel?: string }[];
   totalAmount: number;
   /** Payment outcome from Stripe fulfilment, e.g. COMPLETED or PAID_STOCK_SHORTAGE. */
   paymentStatus?: string;

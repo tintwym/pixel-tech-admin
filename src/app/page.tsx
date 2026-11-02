@@ -15,6 +15,7 @@ import {
   restockProduct,
   updateAdminOrderStatus,
   updateProduct,
+  reorderProductImages,
   type UpdateProductFields,
 } from '@/lib/adminApi';
 
@@ -117,6 +118,12 @@ export default function AdminHomePage() {
     try {
       const updated = await updateAdminOrderStatus(orderId, status);
       setOrders((prev) => prev.map((o) => (o.id === orderId ? updated : o)));
+      const { publishOrderStatusEvent } = await import('@/lib/orderStatusBus');
+      publishOrderStatusEvent({
+        orderId: updated.id,
+        status: updated.status,
+        customerName: updated.customerName,
+      });
       return true;
     } catch (error) {
       reportError('Couldn’t update order', error);
@@ -137,7 +144,13 @@ export default function AdminHomePage() {
       return false;
     }
     try {
+      let gallery = null as Awaited<ReturnType<typeof updateProduct>>;
+      // Apply gallery order first so a following upload appends after the new primary.
+      if (fields.imageOrder?.length && !fields.replaceImages) {
+        gallery = await reorderProductImages(item.apiId, fields.imageOrder);
+      }
       const images = await updateProduct(item.apiId, fields);
+      if (images) gallery = images;
       setProducts((prev) =>
         prev.map((p) =>
           p.id === item.id
@@ -150,8 +163,12 @@ export default function AdminHomePage() {
                 price: fields.price,
                 stock: fields.stock,
                 maxStock: Math.max(p.maxStock, fields.stock),
-                ...(images
-                  ? { imageUrl: images.imageUrl, imageUrls: images.imageUrls }
+                ...(gallery
+                  ? {
+                      imageUrl: gallery.imageUrl,
+                      imageUrls: gallery.imageUrls,
+                      imageGallery: gallery.imageGallery,
+                    }
                   : {}),
               }
             : p

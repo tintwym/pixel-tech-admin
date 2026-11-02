@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LayoutDashboard,
   ShoppingBag,
@@ -15,6 +15,8 @@ import {
   Search,
   Bell,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CalendarDays,
   DollarSign,
   ShoppingCart,
@@ -22,6 +24,7 @@ import {
   Percent,
   ArrowUpRight,
   ArrowDownRight,
+  Star,
   TrendingUp,
   PackageX,
   PackageCheck,
@@ -53,13 +56,36 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { AdminOrder, GroceryItem, OrderStatus } from '@/types';
+import { AdminOrder, GroceryItem, OrderStatus, ProductGalleryImage } from '@/types';
 import ProductImage from '@/components/ProductImage';
 import SignOutModal from '@/components/SignOutModal';
 import Select, { SelectOption } from '@/components/Select';
 import { PRODUCT_BRANDS, PRODUCT_CATEGORIES } from '@/data/catalogTaxonomy';
-import type { UpdateProductFields } from '@/lib/adminApi';
+import {
+  createAdminPromo,
+  fetchAdminPromos,
+  setAdminPromoActive,
+  type AdminPromo,
+  type UpdateProductFields,
+} from '@/lib/adminApi';
 import { buildOrderAnalytics, formatAxisMoney } from '@/lib/orderAnalytics';
+import {
+  DEFAULT_STOCK_THRESHOLD,
+  clearStockBannerDismissal,
+  dismissStockBanner,
+  getStockThreshold,
+  isStockBannerDismissedFor,
+  setStockThreshold,
+} from '@/lib/alertPrefs';
+
+function galleryFromItem(item: GroceryItem): ProductGalleryImage[] {
+  if (item.imageGallery?.length) {
+    return item.imageGallery.map((img) => ({ id: img.id, path: img.path }));
+  }
+  const urls = item.imageUrls?.length ? item.imageUrls : item.imageUrl ? [item.imageUrl] : [];
+  // Offline / local-only rows have no API ids — reorder is disabled for those.
+  return urls.map((path, i) => ({ id: `local-${i}`, path }));
+}
 
 const TREND_OPTIONS: SelectOption<'monthly' | 'weekly' | 'daily'>[] = [
   { value: 'monthly', label: 'Monthly' },
@@ -87,7 +113,15 @@ interface AdminDashboardProps {
   adminLabel?: string;
 }
 
-type View = 'overview' | 'orders' | 'products' | 'customers' | 'analytics' | 'inventory' | 'reports';
+type View =
+  | 'overview'
+  | 'orders'
+  | 'products'
+  | 'customers'
+  | 'analytics'
+  | 'inventory'
+  | 'promos'
+  | 'reports';
 
 const NAV_ITEMS: { id: View; label: string; icon: React.ElementType }[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -96,6 +130,7 @@ const NAV_ITEMS: { id: View; label: string; icon: React.ElementType }[] = [
   { id: 'customers', label: 'Customers', icon: Users },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   { id: 'inventory', label: 'Inventory', icon: Boxes },
+  { id: 'promos', label: 'Promos', icon: Percent },
   { id: 'reports', label: 'Reports', icon: FileText },
 ];
 
@@ -392,7 +427,54 @@ export default function AdminDashboard({
   const [editSaving, setEditSaving] = useState(false);
   const [editImages, setEditImages] = useState<File[]>([]);
   const [replaceGallery, setReplaceGallery] = useState(false);
+  const [editGallery, setEditGallery] = useState<ProductGalleryImage[]>([]);
+  const [galleryDirty, setGalleryDirty] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [stockThreshold, setStockThresholdState] = useState(DEFAULT_STOCK_THRESHOLD);
+  const [showStockBanner, setShowStockBanner] = useState(false);
+  const [promos, setPromos] = useState<AdminPromo[]>([]);
+  const [promosLoading, setPromosLoading] = useState(false);
+  const [promoCode, setPromoCode] = useState('');
+  const [promoLabel, setPromoLabel] = useState('');
+  const [promoType, setPromoType] = useState<AdminPromo['discountType']>('FIXED_MMK');
+  const [promoAmount, setPromoAmount] = useState('5000');
+  const [promoSaving, setPromoSaving] = useState(false);
+  const alertsRef = useRef<HTMLDivElement | null>(null);
+  const lowStockToastSent = useRef(false);
+  const canReorderGallery = editGallery.length > 1 && editGallery.every((img) => !img.id.startsWith('local-'));
   const closeSignOut = useCallback(() => setConfirmSignOut(false), []);
+
+  useEffect(() => {
+    setStockThresholdState(getStockThreshold());
+  }, []);
+
+  const reloadPromos = useCallback(async () => {
+    setPromosLoading(true);
+    try {
+      setPromos(await fetchAdminPromos());
+    } catch {
+      onAddToast('Couldn’t load promos', 'Sign in again or check the API connection.', 'warning');
+    } finally {
+      setPromosLoading(false);
+    }
+  }, [onAddToast]);
+
+  useEffect(() => {
+    if (view === 'promos') {
+      void reloadPromos();
+    }
+  }, [view, reloadPromos]);
+
+  useEffect(() => {
+    if (!alertsOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (alertsRef.current && !alertsRef.current.contains(e.target as Node)) {
+        setAlertsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [alertsOpen]);
   const requestSignOut = () => {
     setProfileOpen(false);
     setMobileNavOpen(false);
@@ -524,9 +606,14 @@ export default function AdminDashboard({
         .map((o) => ({
           id: `#${o.id.slice(0, 8).toUpperCase()}`,
           customer: o.customerName,
-          product:
-            (o.items[0]?.name.split(' — ')[0] ?? '—') +
-            (o.items.length > 1 ? ` +${o.items.length - 1}` : ''),
+          product: (() => {
+            const first = o.items[0];
+            if (!first) return '—';
+            const base = first.name.split(' — ')[0];
+            const cfg = first.variantLabel?.trim();
+            const head = cfg ? `${base} · ${cfg}` : base;
+            return head + (o.items.length > 1 ? ` +${o.items.length - 1}` : '');
+          })(),
           amount: o.totalAmount,
           status: o.status,
           date: o.createdAt,
@@ -562,19 +649,23 @@ export default function AdminDashboard({
 
   /* Inventory */
   const outOfStock = products.filter((p) => p.stock === 0);
-  const lowStock = products.filter((p) => p.stock > 0 && p.stock <= 5);
-  const inStock = products.filter((p) => p.stock > 5);
+  const lowStock = products.filter((p) => p.stock > 0 && p.stock <= stockThreshold);
+  const inStock = products.filter((p) => p.stock > stockThreshold);
   const totalUnits = products.reduce((s, p) => s + p.stock, 0);
 
   const restockPredictions = useMemo(() => {
     return productStats
       .map(({ item, realUnits }) => {
         // Prefer real sales velocity; light fallback when a SKU has no order history yet.
-        const effective = realUnits > 0 ? realUnits : item.stock <= 5 ? 2 : 1;
+        const effective = realUnits > 0 ? realUnits : item.stock <= stockThreshold ? 2 : 1;
         const dailyVelocity = parseFloat(Math.max(0.2, effective / 14).toFixed(1));
         const daysRemaining = Math.max(0, parseFloat((item.stock / dailyVelocity).toFixed(1)));
         const urgency: 'HIGH' | 'MEDIUM' | 'LOW' =
-          item.stock <= 5 || daysRemaining <= 3.5 ? 'HIGH' : daysRemaining <= 6 ? 'MEDIUM' : 'LOW';
+          item.stock <= stockThreshold || daysRemaining <= 3.5
+            ? 'HIGH'
+            : daysRemaining <= 6
+              ? 'MEDIUM'
+              : 'LOW';
         return {
           item,
           dailyVelocity,
@@ -588,11 +679,25 @@ export default function AdminDashboard({
         const score = { HIGH: 3, MEDIUM: 2, LOW: 1 };
         return score[b.urgency] - score[a.urgency] || a.daysRemaining - b.daysRemaining;
       });
-  }, [productStats]);
+  }, [productStats, stockThreshold]);
 
   const criticalCount = restockPredictions.filter((p) => p.urgency === 'HIGH').length;
   const pendingOrders = orders.filter((o) => o.status === 'pending' || o.status === 'processing').length;
-  const alertCount = criticalCount + pendingOrders;
+  const alertCount = outOfStock.length + lowStock.length + pendingOrders;
+  const stockAlertKey = `${outOfStock.length}:${lowStock.length}:${stockThreshold}`;
+
+  useEffect(() => {
+    const needsBanner = outOfStock.length + lowStock.length > 0;
+    setShowStockBanner(needsBanner && !isStockBannerDismissedFor(stockAlertKey));
+    if (needsBanner && !lowStockToastSent.current) {
+      lowStockToastSent.current = true;
+      const bits = [
+        outOfStock.length ? `${outOfStock.length} out of stock` : null,
+        lowStock.length ? `${lowStock.length} ≤ ${stockThreshold} units` : null,
+      ].filter(Boolean);
+      onAddToast('Inventory alert', bits.join(' · ') || 'Check inventory.', 'warning');
+    }
+  }, [stockAlertKey, outOfStock.length, lowStock.length, stockThreshold, onAddToast]);
 
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const hour = now.getHours();
@@ -784,7 +889,18 @@ export default function AdminDashboard({
                     <span className="font-medium">{r.customer}</span>
                   </span>
                 </td>
-                <td className="py-3 max-w-[180px] truncate">{r.product}</td>
+                <td
+                  className="py-3 max-w-[220px] truncate"
+                  title={
+                    r.source?.items
+                      ?.map((it) =>
+                        it.variantLabel ? `${it.name} · ${it.variantLabel}` : it.name
+                      )
+                      .join('\n') || r.product
+                  }
+                >
+                  {r.product}
+                </td>
                 <td className="py-3 font-semibold">{formatMMK(r.amount, false)}</td>
                 <td className="py-3">
                   <StatusPill status={r.status} />
@@ -848,7 +964,7 @@ export default function AdminDashboard({
     <div className="grid grid-cols-2 gap-3">
       {[
         { label: 'Out of Stock', value: outOfStock.length, icon: PackageX, tone: 'text-rose-500 bg-rose-50 dark:bg-rose-500/15', note: outOfStock.length ? 'Needs action' : 'All good', noteTone: outOfStock.length ? 'text-rose-500' : 'text-emerald-600' },
-        { label: 'Low Stock', value: lowStock.length, icon: AlertTriangle, tone: 'text-amber-500 bg-amber-50 dark:bg-amber-500/15', note: '≤ 5 units', noteTone: 'text-amber-600' },
+        { label: 'Low Stock', value: lowStock.length, icon: AlertTriangle, tone: 'text-amber-500 bg-amber-50 dark:bg-amber-500/15', note: `≤ ${stockThreshold} units`, noteTone: 'text-amber-600' },
         { label: 'In Stock', value: inStock.length, icon: PackageCheck, tone: 'text-emerald-600 bg-emerald-50 dark:bg-emerald-500/15', note: `${totalUnits} units`, noteTone: 'text-emerald-600' },
         { label: 'Total Products', value: products.length, icon: Layers, tone: 'text-indigo-500 bg-indigo-50 dark:bg-indigo-500/15', note: `${new Set(products.map((p) => p.category)).size} categories`, noteTone: 'text-slate-500' },
       ].map((t) => (
@@ -968,6 +1084,8 @@ export default function AdminDashboard({
     setEditCategory(item.category || 'Accessories');
     setEditImages([]);
     setReplaceGallery(false);
+    setEditGallery(galleryFromItem(item));
+    setGalleryDirty(false);
   };
 
   const closeProductEditor = () => {
@@ -975,6 +1093,32 @@ export default function AdminDashboard({
     setEditingProduct(null);
     setEditImages([]);
     setReplaceGallery(false);
+    setEditGallery([]);
+    setGalleryDirty(false);
+  };
+
+  const moveGalleryImage = (index: number, delta: number) => {
+    setEditGallery((prev) => {
+      const next = [...prev];
+      const target = index + delta;
+      if (target < 0 || target >= next.length) return prev;
+      const tmp = next[index];
+      next[index] = next[target];
+      next[target] = tmp;
+      return next;
+    });
+    setGalleryDirty(true);
+  };
+
+  const makeGalleryPrimary = (index: number) => {
+    if (index <= 0) return;
+    setEditGallery((prev) => {
+      const next = [...prev];
+      const [picked] = next.splice(index, 1);
+      next.unshift(picked);
+      return next;
+    });
+    setGalleryDirty(true);
   };
 
   const saveProductEditor = async () => {
@@ -983,6 +1127,14 @@ export default function AdminDashboard({
       onAddToast(
         'Add images',
         'Select at least one image when replacing the gallery.',
+        'warning'
+      );
+      return;
+    }
+    if (galleryDirty && !canReorderGallery && !replaceGallery) {
+      onAddToast(
+        'Cannot reorder',
+        'This product isn’t linked to server image IDs. Refresh the catalog after signing in.',
         'warning'
       );
       return;
@@ -997,14 +1149,23 @@ export default function AdminDashboard({
       stock: editingProduct.stock,
       images: editImages.length > 0 ? editImages : undefined,
       replaceImages: replaceGallery,
+      imageOrder:
+        galleryDirty && canReorderGallery && !replaceGallery
+          ? editGallery.map((img) => img.id)
+          : undefined,
     });
     setEditSaving(false);
     if (ok) {
+      const bits = [
+        galleryDirty && canReorderGallery ? 'gallery order' : null,
+        editImages.length > 0
+          ? `${editImages.length} new image${editImages.length === 1 ? '' : 's'}`
+          : null,
+        'details',
+      ].filter(Boolean);
       onAddToast(
         'Product updated',
-        editImages.length > 0
-          ? `${editingProduct.name} saved with ${editImages.length} new image${editImages.length === 1 ? '' : 's'}.`
-          : `${editingProduct.name} brand/category saved.`,
+        `${editingProduct.name}: ${bits.join(' · ')} saved.`,
         'success'
       );
       closeProductEditor();
@@ -1099,7 +1260,7 @@ export default function AdminDashboard({
               className="absolute inset-0 bg-black/60 cursor-pointer"
               onClick={closeProductEditor}
             />
-            <div className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0B1220] p-5 shadow-2xl">
+            <div className="relative z-10 w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0B1220] p-5 shadow-2xl">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-600">Edit product</p>
@@ -1148,26 +1309,83 @@ export default function AdminDashboard({
                 </label>
 
                 <div>
-                  <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Current gallery</p>
+                  <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Gallery
+                    {galleryDirty && (
+                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-amber-600">
+                        Unsaved order
+                      </span>
+                    )}
+                  </p>
                   <div className="mt-1.5 flex gap-2 overflow-x-auto pb-1">
-                    {(editingProduct.imageUrls?.length
-                      ? editingProduct.imageUrls
-                      : [editingProduct.imageUrl]
-                    ).map((src, i) => (
-                      <ProductImage
-                        key={`${src}-${i}`}
-                        src={src}
-                        alt=""
-                        className="h-14 w-14 shrink-0 rounded-lg object-cover border border-slate-200 dark:border-white/10"
-                      />
+                    {editGallery.map((img, i) => (
+                      <div
+                        key={`${img.id}-${i}`}
+                        className={`relative shrink-0 rounded-xl border p-1 ${
+                          i === 0
+                            ? 'border-[#0284c7] bg-[#e0f2fe]/50 dark:bg-sky-950/30'
+                            : 'border-slate-200 dark:border-white/10'
+                        }`}
+                      >
+                        <ProductImage
+                          src={img.path}
+                          alt=""
+                          className="h-16 w-16 rounded-lg object-cover"
+                        />
+                        {i === 0 && (
+                          <span className="absolute left-1.5 top-1.5 rounded bg-[#0284c7] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">
+                            Card
+                          </span>
+                        )}
+                        {canReorderGallery && (
+                          <div className="mt-1 flex items-center justify-center gap-0.5">
+                            <button
+                              type="button"
+                              disabled={editSaving || i === 0}
+                              onClick={() => moveGalleryImage(i, -1)}
+                              className="rounded p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                              aria-label="Move left"
+                              title="Move left"
+                            >
+                              <ChevronLeft className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={editSaving || i === 0}
+                              onClick={() => makeGalleryPrimary(i)}
+                              className="rounded p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                              aria-label="Set as catalog card"
+                              title="Set as catalog card"
+                            >
+                              <Star
+                                className={`h-3.5 w-3.5 ${i === 0 ? 'fill-amber-400 text-amber-400' : ''}`}
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={editSaving || i === editGallery.length - 1}
+                              onClick={() => moveGalleryImage(i, 1)}
+                              className="rounded p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10 disabled:opacity-30 cursor-pointer"
+                              aria-label="Move right"
+                              title="Move right"
+                            >
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     ))}
                   </div>
                   <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
-                    First image is the catalog card. For colors, put the finish in the filename
-                    (e.g. <span className="font-mono">…-select-starwhite-…</span>,{' '}
-                    <span className="font-mono">…-select-nightsky-…</span>). Shared heroes can use{' '}
-                    <span className="font-mono">unselect</span>.
+                    First image is the storefront card. Use arrows to reorder, or the star to make an
+                    image primary. Finish colors should stay in the filename
+                    (e.g. <span className="font-mono">…-select-spaceblack-…</span>).
                   </p>
+                  {!canReorderGallery && editGallery.length > 0 && (
+                    <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                      Reorder needs live API image IDs. Sign in against the server catalog to enable it.
+                    </p>
+                  )}
                 </div>
 
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
@@ -1532,6 +1750,157 @@ export default function AdminDashboard({
     );
   };
 
+  const renderPromos = () => {
+    const typeLabel = (p: AdminPromo) => {
+      if (p.discountType === 'PERCENT') return `${p.amount}% off`;
+      if (p.discountType === 'FREE_SHIPPING') return 'Free shipping';
+      return `${Math.round(p.amount).toLocaleString()} MMK off`;
+    };
+    return (
+      <div className="space-y-5">
+        <Card className="p-5">
+          <CardHeader
+            title="Create promo"
+            right={
+              <button
+                type="button"
+                onClick={() => void reloadPromos()}
+                disabled={promosLoading}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 disabled:opacity-60 cursor-pointer"
+              >
+                <RefreshCw className={`h-3 w-3 ${promosLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+            }
+          />
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="text-[11px] font-medium text-slate-500 space-y-1">
+              <span>Code</span>
+              <input
+                value={promoCode}
+                onChange={(e) => setPromoCode(e.target.value.toUpperCase())}
+                placeholder="SUMMER15"
+                className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#121a24] px-3 py-2 text-[13px] text-slate-800 dark:text-white outline-hidden"
+              />
+            </label>
+            <label className="text-[11px] font-medium text-slate-500 space-y-1">
+              <span>Type</span>
+              <select
+                value={promoType}
+                onChange={(e) => setPromoType(e.target.value as AdminPromo['discountType'])}
+                className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#121a24] px-3 py-2 text-[13px] text-slate-800 dark:text-white outline-hidden"
+              >
+                <option value="FIXED_MMK">Fixed MMK</option>
+                <option value="PERCENT">Percent</option>
+                <option value="FREE_SHIPPING">Free shipping</option>
+              </select>
+            </label>
+            <label className="text-[11px] font-medium text-slate-500 space-y-1">
+              <span>Amount</span>
+              <input
+                type="number"
+                min={0}
+                value={promoAmount}
+                disabled={promoType === 'FREE_SHIPPING'}
+                onChange={(e) => setPromoAmount(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#121a24] px-3 py-2 text-[13px] text-slate-800 dark:text-white outline-hidden disabled:opacity-50"
+              />
+            </label>
+            <label className="text-[11px] font-medium text-slate-500 space-y-1">
+              <span>Label</span>
+              <input
+                value={promoLabel}
+                onChange={(e) => setPromoLabel(e.target.value)}
+                placeholder="Optional shopper-facing note"
+                className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-[#121a24] px-3 py-2 text-[13px] text-slate-800 dark:text-white outline-hidden"
+              />
+            </label>
+          </div>
+          <button
+            type="button"
+            disabled={promoSaving || !promoCode.trim()}
+            onClick={async () => {
+              setPromoSaving(true);
+              try {
+                const created = await createAdminPromo({
+                  code: promoCode.trim(),
+                  discountType: promoType,
+                  amount: promoType === 'FREE_SHIPPING' ? 0 : Number(promoAmount) || 0,
+                  label: promoLabel.trim() || undefined,
+                });
+                setPromos((prev) => [created, ...prev.filter((p) => p.id !== created.id)]);
+                setPromoCode('');
+                setPromoLabel('');
+                onAddToast('Promo created', `${created.code} is live for checkout.`, 'success');
+              } catch {
+                onAddToast('Couldn’t create promo', 'Check the code isn’t already used.', 'warning');
+              } finally {
+                setPromoSaving(false);
+              }
+            }}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[#0284c7] px-3.5 py-2 text-[12px] font-semibold text-white hover:bg-[#0ea5e9] disabled:opacity-60 cursor-pointer"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {promoSaving ? 'Saving…' : 'Create promo'}
+          </button>
+          <p className="mt-3 text-[11px] text-slate-400">
+            Seeded defaults: WELCOME5K, PIXEL10, FREESHIP. Loyalty codes (LOYAL2K / FREEDEL / LUXTECH) still redeem from the shopper profile.
+          </p>
+        </Card>
+
+        <Card className="p-5">
+          <CardHeader title={`Active catalog (${promos.length})`} />
+          {promosLoading && promos.length === 0 ? (
+            <p className="py-6 text-center text-xs text-slate-400">Loading promos…</p>
+          ) : promos.length === 0 ? (
+            <p className="py-6 text-center text-xs text-slate-400">No promo codes yet.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 dark:divide-white/5">
+              {promos.map((p) => (
+                <li key={p.id} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="font-mono text-[13px] font-semibold text-slate-900 dark:text-white">
+                      {p.code}
+                      {!p.active && (
+                        <span className="ml-2 rounded-full bg-slate-100 dark:bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                          Inactive
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {typeLabel(p)}
+                      {p.label ? ` · ${p.label}` : ''}
+                      {` · used ${p.redemptionCount}${p.maxRedemptions != null ? `/${p.maxRedemptions}` : ''}`}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const updated = await setAdminPromoActive(p.id, !p.active);
+                        setPromos((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+                        onAddToast(
+                          updated.active ? 'Promo activated' : 'Promo paused',
+                          `${updated.code} is now ${updated.active ? 'active' : 'inactive'}.`,
+                          'info'
+                        );
+                      } catch {
+                        onAddToast('Update failed', 'Could not change promo status.', 'warning');
+                      }
+                    }}
+                    className="self-start rounded-lg border border-slate-200 dark:border-white/10 px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer"
+                  >
+                    {p.active ? 'Deactivate' : 'Activate'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
+    );
+  };
+
   const renderReports = () => (
     <div className="space-y-5">
       <Card className="p-5">
@@ -1568,6 +1937,7 @@ export default function AdminDashboard({
     customers: renderCustomers,
     analytics: renderAnalytics,
     inventory: renderInventory,
+    promos: renderPromos,
     reports: renderReports,
   };
 
@@ -1609,10 +1979,13 @@ export default function AdminDashboard({
       })}
       <div className="mt-auto space-y-1 border-t border-slate-100 dark:border-white/10 pt-4">
         <button
-          onClick={() => onAddToast('Settings', 'Store settings are coming soon.', 'info')}
+          onClick={() => {
+            setAlertsOpen(true);
+            setMobileNavOpen(false);
+          }}
           className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer"
         >
-          <Settings className="h-4 w-4" /> Settings
+          <Settings className="h-4 w-4" /> Alerts &amp; threshold
         </button>
         <button
           onClick={() => onAddToast('Help & Support', 'Contact the Pixel Tech dev team for admin support.', 'info')}
@@ -1678,14 +2051,126 @@ export default function AdminDashboard({
               />
             </div>
             <div className="ml-auto flex items-center gap-2 sm:gap-4">
-              <button
-                onClick={() => go(criticalCount ? 'inventory' : 'orders')}
-                className="relative rounded-xl p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer"
-                aria-label={`${alertCount} alerts`}
-              >
-                <Bell className="h-5 w-5" />
-                {alertCount > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-[#0f1722]" />}
-              </button>
+              <div className="relative" ref={alertsRef}>
+                <button
+                  onClick={() => setAlertsOpen((v) => !v)}
+                  className="relative rounded-xl p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer"
+                  aria-label={`${alertCount} alerts`}
+                  aria-expanded={alertsOpen}
+                >
+                  <Bell className="h-5 w-5" />
+                  {alertCount > 0 && (
+                    <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-[#0f1722]" />
+                  )}
+                </button>
+                {alertsOpen && (
+                  <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#121a24] p-3 shadow-xl z-50">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <p className="text-[13px] font-semibold text-slate-800 dark:text-white">Ops alerts</p>
+                      <span className="rounded-full bg-slate-100 dark:bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                        {alertCount}
+                      </span>
+                    </div>
+                    <label className="mb-3 flex items-center justify-between gap-3 rounded-lg bg-slate-50 dark:bg-white/5 px-2.5 py-2 text-[11px] text-slate-600 dark:text-slate-300">
+                      <span>Low-stock threshold</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={50}
+                        value={stockThreshold}
+                        onChange={(e) => {
+                          const next = setStockThreshold(Number(e.target.value) || DEFAULT_STOCK_THRESHOLD);
+                          setStockThresholdState(next);
+                          clearStockBannerDismissal();
+                          lowStockToastSent.current = false;
+                        }}
+                        className="w-14 rounded-md border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0f1722] px-2 py-1 text-right text-[12px] font-semibold tabular-nums outline-hidden"
+                      />
+                    </label>
+                    <div className="max-h-64 space-y-1.5 overflow-y-auto">
+                      {outOfStock.slice(0, 4).map((p) => (
+                        <button
+                          key={`oos-${p.id}`}
+                          type="button"
+                          onClick={() => {
+                            setAlertsOpen(false);
+                            go('inventory');
+                          }}
+                          className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-rose-50 dark:hover:bg-rose-500/10 cursor-pointer"
+                        >
+                          <PackageX className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-500" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-[12px] font-medium text-slate-800 dark:text-slate-100">
+                              {p.name}
+                            </span>
+                            <span className="text-[10px] text-rose-500">Out of stock</span>
+                          </span>
+                        </button>
+                      ))}
+                      {lowStock.slice(0, 4).map((p) => (
+                        <button
+                          key={`low-${p.id}`}
+                          type="button"
+                          onClick={() => {
+                            setAlertsOpen(false);
+                            go('inventory');
+                          }}
+                          className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-500/10 cursor-pointer"
+                        >
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-[12px] font-medium text-slate-800 dark:text-slate-100">
+                              {p.name}
+                            </span>
+                            <span className="text-[10px] text-amber-600">{p.stock} left</span>
+                          </span>
+                        </button>
+                      ))}
+                      {orders
+                        .filter((o) => o.status === 'pending' || o.status === 'processing')
+                        .slice(0, 4)
+                        .map((o) => (
+                          <button
+                            key={`ord-${o.id}`}
+                            type="button"
+                            onClick={() => {
+                              setAlertsOpen(false);
+                              go('orders');
+                            }}
+                            className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-sky-50 dark:hover:bg-sky-500/10 cursor-pointer"
+                          >
+                            <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-500" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-[12px] font-medium text-slate-800 dark:text-slate-100">
+                                {o.customerName} · {STATUS_LABELS[o.status]}
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                #{o.id.slice(0, 8).toUpperCase()}
+                              </span>
+                            </span>
+                          </button>
+                        ))}
+                      {alertCount === 0 && (
+                        <p className="px-2 py-4 text-center text-[12px] text-slate-400">
+                          All clear — no stock or order alerts.
+                        </p>
+                      )}
+                    </div>
+                    {(outOfStock.length > 0 || lowStock.length > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAlertsOpen(false);
+                          go('inventory');
+                        }}
+                        className="mt-3 w-full rounded-lg bg-[#0284c7] px-3 py-2 text-[12px] font-semibold text-white hover:bg-[#0ea5e9] cursor-pointer"
+                      >
+                        Open inventory
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="relative">
                 <button
                   onClick={() => setProfileOpen((v) => !v)}
@@ -1735,6 +2220,47 @@ export default function AdminDashboard({
                 {formatDate(monthStart)} – {formatDate(now)}
               </div>
             </div>
+
+            {showStockBanner && (
+              <div
+                role="status"
+                className="flex flex-col gap-3 rounded-2xl border border-amber-200/80 bg-amber-50 px-4 py-3 text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+                  <div className="min-w-0">
+                    <p className="text-[13px] font-semibold">
+                      {outOfStock.length + lowStock.length} SKU
+                      {outOfStock.length + lowStock.length === 1 ? '' : 's'} need attention
+                    </p>
+                    <p className="text-[12px] text-amber-800/80 dark:text-amber-100/70">
+                      {outOfStock.length ? `${outOfStock.length} out of stock` : null}
+                      {outOfStock.length && lowStock.length ? ' · ' : null}
+                      {lowStock.length ? `${lowStock.length} at or below ${stockThreshold} units` : null}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => go('inventory')}
+                    className="rounded-lg bg-amber-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-amber-500 cursor-pointer"
+                  >
+                    Review inventory
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      dismissStockBanner(stockAlertKey);
+                      setShowStockBanner(false);
+                    }}
+                    className="rounded-lg px-2 py-1.5 text-[12px] font-medium text-amber-800/70 hover:bg-amber-100 dark:text-amber-100/70 dark:hover:bg-amber-500/20 cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
 
             {sections[view]()}
           </main>

@@ -86,7 +86,13 @@ type ApiAdminOrder = {
   paymentStatus?: string | null;
   fulfillmentStatus?: string | null;
   createdAt?: string | null;
-  items?: { productId?: string | null; productName?: string | null; quantity?: number; price?: number | string | null }[];
+  items?: {
+    productId?: string | null;
+    productName?: string | null;
+    quantity?: number;
+    price?: number | string | null;
+    variantLabel?: string | null;
+  }[];
 };
 
 const ORDER_STATUSES: OrderStatus[] = ['pending', 'processing', 'out_for_delivery', 'delivered', 'cancelled'];
@@ -108,6 +114,7 @@ function mapOrder(api: ApiAdminOrder): AdminOrder {
       name: item.productName || 'Product',
       quantity: item.quantity ?? 0,
       price: Number(item.price) || 0,
+      variantLabel: item.variantLabel?.trim() || undefined,
     })),
   };
 }
@@ -161,6 +168,82 @@ export async function restockProduct(productApiId: string, amount: number): Prom
   return Number(data?.stock) || 0;
 }
 
+export type AdminPromo = {
+  id: string;
+  code: string;
+  discountType: 'FIXED_MMK' | 'PERCENT' | 'FREE_SHIPPING';
+  amount: number;
+  active: boolean;
+  maxRedemptions?: number;
+  redemptionCount: number;
+  expiresAt?: string;
+  label?: string;
+};
+
+type ApiPromo = {
+  id: string;
+  code?: string | null;
+  discountType?: string | null;
+  amount?: number | string | null;
+  active?: boolean;
+  maxRedemptions?: number | null;
+  redemptionCount?: number | null;
+  expiresAt?: string | null;
+  label?: string | null;
+};
+
+function mapPromo(api: ApiPromo): AdminPromo {
+  const type = api.discountType;
+  const discountType =
+    type === 'PERCENT' || type === 'FREE_SHIPPING' || type === 'FIXED_MMK'
+      ? type
+      : 'FIXED_MMK';
+  return {
+    id: api.id,
+    code: (api.code || '').toUpperCase(),
+    discountType,
+    amount: Number(api.amount) || 0,
+    active: Boolean(api.active),
+    maxRedemptions: api.maxRedemptions ?? undefined,
+    redemptionCount: api.redemptionCount ?? 0,
+    expiresAt: api.expiresAt || undefined,
+    label: api.label || undefined,
+  };
+}
+
+export async function fetchAdminPromos(signal?: AbortSignal): Promise<AdminPromo[]> {
+  const data = await adminRequest<ApiPromo[]>('/admin/promos', { signal });
+  return (data ?? []).map(mapPromo);
+}
+
+export async function createAdminPromo(input: {
+  code: string;
+  discountType: AdminPromo['discountType'];
+  amount: number;
+  label?: string;
+  maxRedemptions?: number;
+}): Promise<AdminPromo> {
+  const data = await adminRequest<ApiPromo>('/admin/promos', {
+    method: 'POST',
+    body: JSON.stringify({
+      code: input.code,
+      discountType: input.discountType,
+      amount: input.amount,
+      label: input.label,
+      maxRedemptions: input.maxRedemptions,
+    }),
+  });
+  return mapPromo(data);
+}
+
+export async function setAdminPromoActive(id: string, active: boolean): Promise<AdminPromo> {
+  const data = await adminRequest<ApiPromo>(`/admin/promos/${encodeURIComponent(id)}/active`, {
+    method: 'PATCH',
+    body: JSON.stringify({ active }),
+  });
+  return mapPromo(data);
+}
+
 export type UpdateProductFields = {
   name: string;
   description: string;
@@ -172,12 +255,33 @@ export type UpdateProductFields = {
   images?: File[];
   /** When true, clears existing gallery before attaching new uploads. */
   replaceImages?: boolean;
+  /** Existing image UUIDs in display order; index 0 = catalog card hero. */
+  imageOrder?: string[];
 };
 
 export type UpdatedProductImages = {
   imageUrl: string;
   imageUrls: string[];
+  imageGallery?: { id: string; path: string }[];
 };
+
+function mapProductImages(data: {
+  images?: { id?: string; path?: string; sortOrder?: number | null }[];
+}): UpdatedProductImages | null {
+  const images = [...(data.images ?? [])]
+    .filter((img) => Boolean(img.path))
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  const urls = images.map((img) => img.path!).filter(Boolean);
+  if (urls.length === 0) return null;
+  const imageGallery = images
+    .filter((img): img is { id: string; path: string } => Boolean(img.id && img.path))
+    .map((img) => ({ id: String(img.id), path: img.path }));
+  return {
+    imageUrl: urls[0],
+    imageUrls: urls,
+    imageGallery: imageGallery.length ? imageGallery : undefined,
+  };
+}
 
 /** Update product metadata and optional gallery via multipart form fields. */
 export async function updateProduct(
@@ -213,14 +317,44 @@ export async function updateProduct(
 
   try {
     const data = (await res.json()) as {
-      images?: { path?: string }[];
+      images?: { id?: string; path?: string; sortOrder?: number | null }[];
     };
-    const urls =
-      data.images
-        ?.map((img) => img.path)
-        .filter((path): path is string => Boolean(path)) ?? [];
-    if (urls.length === 0) return null;
-    return { imageUrl: urls[0], imageUrls: urls };
+    return mapProductImages(data);
+  } catch {
+    return null;
+  }
+}
+
+/** Reorder gallery; first id becomes the catalog card hero. */
+export async function reorderProductImages(
+  productId: string,
+  imageIds: string[]
+): Promise<UpdatedProductImages | null> {
+  const token = getAdminToken();
+  if (!token) throw new AdminApiError(401, 'Not signed in.');
+  if (!imageIds.length) throw new AdminApiError(400, 'imageIds is required.');
+
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(`/products/${productId}/images/order`), {
+      method: 'PUT',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: token,
+      },
+      body: JSON.stringify({ imageIds }),
+    });
+  } catch {
+    throw new AdminApiError(0, 'Network error');
+  }
+  if (!res.ok) throw await parseError(res);
+
+  try {
+    const data = (await res.json()) as {
+      images?: { id?: string; path?: string; sortOrder?: number | null }[];
+    };
+    return mapProductImages(data);
   } catch {
     return null;
   }

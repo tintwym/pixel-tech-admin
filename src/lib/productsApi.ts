@@ -11,6 +11,7 @@ type ApiProductImage = {
   id?: string;
   path?: string;
   altText?: string;
+  sortOrder?: number | null;
 };
 
 type ApiProduct = {
@@ -67,11 +68,18 @@ function mapApiProduct(api: ApiProduct, local?: GroceryItem): GroceryItem {
   const name = api.name?.trim() || local?.name || 'Product';
   const priceNum = Number(api.price);
   const stock = typeof api.stock === 'number' ? api.stock : local?.stock ?? 0;
-  const apiGallery =
-    api.images
-      ?.map((img) => img.path)
-      .filter((path): path is string => Boolean(path) && !isPlaceholderImage(path)) ?? [];
-  // Curated local galleries win for order (hero first). API is fallback for unseeded SKUs.
+  const apiImages = [...(api.images ?? [])]
+    .filter((img) => Boolean(img.path) && !isPlaceholderImage(img.path))
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  const apiGallery = apiImages
+    .map((img) => img.path)
+    .filter((path): path is string => Boolean(path));
+  const imageGallery = apiImages
+    .filter((img): img is ApiProductImage & { id: string; path: string } =>
+      Boolean(img.id && img.path)
+    )
+    .map((img) => ({ id: String(img.id), path: img.path }));
+  // Live API gallery is source of truth (admin can reorder). Local curated is fallback.
   const localGallery =
     local?.imageUrls?.length
       ? local.imageUrls.filter((path) => !isPlaceholderImage(path))
@@ -79,10 +87,10 @@ function mapApiProduct(api: ApiProduct, local?: GroceryItem): GroceryItem {
         ? [local.imageUrl]
         : [];
   const imageUrls =
-    localGallery.length > 0
-      ? localGallery
-      : apiGallery.length > 0
-        ? apiGallery
+    apiGallery.length > 0
+      ? apiGallery
+      : localGallery.length > 0
+        ? localGallery
         : [
             'https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?auto=format&fit=crop&w=600&q=80',
           ];
@@ -99,6 +107,7 @@ function mapApiProduct(api: ApiProduct, local?: GroceryItem): GroceryItem {
     currency: 'MMK',
     imageUrl,
     imageUrls,
+    imageGallery: imageGallery.length ? imageGallery : undefined,
     stock,
     maxStock: Math.max(local?.maxStock ?? stock, stock),
     availabilityZone: local?.availabilityZone ?? 'All Zones',
