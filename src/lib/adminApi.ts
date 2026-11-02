@@ -47,7 +47,7 @@ async function parseError(res: Response): Promise<AdminApiError> {
       if (trimmed.startsWith('<') || /503 Server Error|billing is disabled/i.test(trimmed)) {
         message =
           res.status === 503
-            ? 'The API is temporarily unavailable (Cloud Run may be paused or billing disabled).'
+            ? 'The API is temporarily unavailable (Render may be sleeping on the free plan — wait and retry).'
             : 'The API returned an unexpected HTML error page.';
       } else if (trimmed && trimmed.length < 300) {
         message = trimmed;
@@ -259,7 +259,7 @@ export function serverErrorMessage(error: AdminApiError): string {
     case error.status === 502 || error.status === 503 || error.status === 504:
       return (
         error.message ||
-        'The API is unavailable right now. If you use Cloud Run, check that billing is enabled and the service is running.'
+        'The API is unavailable right now. If you use Render’s free plan, the service may be waking from sleep — wait a minute and try again.'
       );
     case error.status >= 500:
       return 'The server ran into a problem. Please try again shortly.';
