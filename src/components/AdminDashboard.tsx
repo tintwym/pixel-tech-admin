@@ -687,6 +687,11 @@ export default function AdminDashboard({
   const stockAlertKey = `${outOfStock.length}:${lowStock.length}:${stockThreshold}`;
 
   useEffect(() => {
+    // Allow a fresh toast whenever the alert composition / threshold changes.
+    lowStockToastSent.current = false;
+  }, [stockAlertKey]);
+
+  useEffect(() => {
     const needsBanner = outOfStock.length + lowStock.length > 0;
     setShowStockBanner(needsBanner && !isStockBannerDismissedFor(stockAlertKey));
     if (needsBanner && !lowStockToastSent.current) {
