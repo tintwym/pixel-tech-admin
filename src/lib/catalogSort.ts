@@ -25,6 +25,7 @@ export function inferCatalogPriority(name: string): number {
   }
 
   if (/\bimac\b/.test(n)) score = Math.max(score, 6150);
+  if (/\bmac\s*mini\b/.test(n)) score = Math.max(score, 6100);
 
   if (n.includes('macbook')) {
     if (/\bproled\b/.test(n)) score = Math.max(score, 6500);

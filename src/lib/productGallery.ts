@@ -68,6 +68,8 @@ const NON_COLOR_TOKENS = new Set([
   'pro',
   'proled',
   'imac',
+  'mini',
+  'chip',
 ]);
 
 function titleCaseColor(id: string): string {

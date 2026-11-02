@@ -117,7 +117,7 @@ const CATALOG_ITEMS: GroceryItem[] = [
     id: 'p5',
     name: 'MacBook Air',
     description:
-      'Ultra-portable Liquid Retina laptop with Apple M5, MagSafe, Thunderbolt, Wi-Fi 7, and all-day battery. Choose 13" or 15", memory, and storage. Finishes: Midnight, Starlight, Silver, and Sky Blue.',
+      'M5 Liquid Retina laptop with silent fanless design and all-day battery. Choose 13" or 15", memory, and storage. Finishes: Midnight, Starlight, Silver, and Sky Blue.',
     brand: 'Apple',
     category: 'Laptops',
     price: 4299000,
@@ -202,7 +202,7 @@ const CATALOG_ITEMS: GroceryItem[] = [
     id: 'p19',
     name: 'MacBook Pro PROLED',
     description:
-      'Next-gen MacBook Pro with PROLED display, M5 Pro / M5 Max–class performance, pro ports, and sustained power for code, video, and 3D. Choose 14" or 16", memory, and storage. Finishes: Space Black and Silver.',
+      'Most advanced MacBook Pro with PROLED XDR (Tandem OLED) touch display, M5 Pro or M5 Max, and up to 24-hour battery. Choose 14.2" or 16.3", memory, and storage. Finishes: Space Black and Silver.',
     brand: 'Apple',
     category: 'Laptops',
     price: 8999000,
@@ -235,7 +235,7 @@ const CATALOG_ITEMS: GroceryItem[] = [
     stock: 10,
     maxStock: 14,
     availabilityZone: 'All Zones',
-    featuresRestrictions: ['SSD', 'PROLED', 'XDR', 'M5 Pro'],
+    featuresRestrictions: ['SSD', 'PROLED', 'M5 Pro', 'Thunderbolt'],
     isSubscriptionAvailable: true,
     rating: 5.0,
     unit: '1 unit',
@@ -245,7 +245,7 @@ const CATALOG_ITEMS: GroceryItem[] = [
     id: 'p20',
     name: 'iMac',
     description:
-      '24" 4.5K Retina all-in-one with Apple M6, Wi-Fi 7, Thunderbolt, and matching Magic Keyboard + Magic Mouse. Colors: Blue, Purple, Pink, Orange, Yellow, Green, and Silver.',
+      '24" 4.5K Retina all-in-one with M6, MagSafe, Center Stage camera, Wi-Fi 7, and matching Magic Keyboard + Magic Mouse. Colors: Blue, Purple, Pink, Orange, Yellow, Green, and Silver.',
     brand: 'Apple',
     category: 'Desktops / PCs',
     price: 5499000,
@@ -279,10 +279,10 @@ const CATALOG_ITEMS: GroceryItem[] = [
     id: 'p21',
     name: 'Mac mini',
     description:
-      'Compact 5x5" desktop with Apple M6 or M5 Pro, Thunderbolt, HDMI, Ethernet, and Wi-Fi 7. Configure memory and storage. Finish: Silver.',
+      'Ultracompact 5×5" desktop with M6 or M5 Pro, front USB-C + headphone jack, Thunderbolt, HDMI, 2.5Gb Ethernet, Wi-Fi 7, and Bluetooth 6. Finish: Silver.',
     brand: 'Apple',
     category: 'Desktops / PCs',
-    price: 2499000,
+    price: 2899000,
     currency: 'MMK',
     imageUrl:
       'https://res.cloudinary.com/diqkh6yqr/image/upload/v1793260962/pixel-tech/products/mac-mini-chip-unselect-202608-gallery-1-4daec40b.jpg',
@@ -305,7 +305,7 @@ const CATALOG_ITEMS: GroceryItem[] = [
     id: 'p6',
     name: 'MacBook Pro',
     description:
-      'Liquid Retina XDR with Apple M6, M5 Pro, or M5 Max. Pro ports and sustained performance for code, video, and 3D. Choose 14" or 16", memory, and storage. Finishes: Space Black and Silver.',
+      'Liquid Retina XDR with M6, M5 Pro, or M5 Max for code, video, and 3D. Choose 14.2" or 16.2", memory, and storage. Finishes: Space Black and Silver.',
     brand: 'Apple',
     category: 'Laptops',
     price: 7899000,
